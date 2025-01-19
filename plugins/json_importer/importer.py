@@ -24,6 +24,7 @@ import glob
 import json
 import datetime
 
+
 def fetch_transactions():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     input_dir = os.path.join(base_dir, "input")

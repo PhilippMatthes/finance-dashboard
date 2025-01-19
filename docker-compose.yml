@@ -1,4 +1,11 @@
 services:
+  ollama:
+    # Fetch a specific version of ollama since its < 1.0.0 and
+    # the API might change.
+    image: ollama/ollama:0.5.7
+    volumes:
+      - ollama_data:/root/ollama
+
   grafana:
     build: grafana
     ports:
@@ -32,11 +39,11 @@ services:
   syncer:
     build: .
     environment:
+      PYTHONUNBUFFERED: 1
       POSTGRES_PASSWORD: secret
-      # Plugin conf
       IMPORTER_PLUGINS: ${IMPORTER_PLUGINS:-plugins.example_importer.importer,plugins.json_importer.importer}
-      CLASSIFIER_PLUGIN: ${CLASSIFIER_PLUGIN:-plugins.example_classifier.classifier}
     restart: on-failure
 
 volumes:
+  ollama_data:
   postgres_data:

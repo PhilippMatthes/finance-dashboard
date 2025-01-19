@@ -2,3 +2,7 @@
 psycopg2-binary==2.9.9
 # For fast and easy csv data processing.
 pandas==2.2.3
+# For http requests
+requests==2.32.3
+# For ollama request/response processing
+pydantic==2.10.5
