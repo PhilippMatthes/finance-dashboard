@@ -111,6 +111,12 @@ def sha256(t):
     return h.hexdigest()[:6]
 df['hash'] = df.apply(sha256, axis=1)
 
+# Drop transactions that are already in the database.
+with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
+    cursor.execute("SELECT hash FROM transactions")
+    hashes = set(h[0] for h in cursor.fetchall())
+df = df[~df['hash'].isin(hashes)]
+
 # Drop duplicate transactions to avoid normal transactions being marked as internal.
 df.drop_duplicates(subset=['date', 'amount', 'client', 'purpose'], inplace=True)
 
@@ -121,9 +127,9 @@ df['amount_abs'] = df['amount'].abs()
 # already marked some transactions as internal.
 df['internal'] = df.duplicated(subset=['date', 'amount_abs'], keep=False) | df['internal'].fillna(False)
 
-prompt = lambda t: f"""
-You are a bank transaction classifier. Classify the following transaction into a
-primary and secondary class.
+prompt = lambda csv: f"""
+You are a bank transaction classifier. Classify the following transactions into
+a primary and secondary class.
 
 Examples for primary class:
 "Vacation", "Sports", "Food", "Transport", "Health", "Shopping", "Income",
@@ -136,64 +142,67 @@ Examples for secondary class:
 
 If unclear, use "Other" as class.
 
-Respond using JSON. Input: {json.dumps({
-    k: v for k, v in t.items() if k in {'client', 'kind', 'purpose'}
-}, indent=2)}
+Respond using JSON. Input(csv):
+
+{csv}
 """
 
-def classify(t):
+def classify(txns):
     """
-    Call ollama LLM to generate a primary and secondary class for the transaction.
+    Call ollama LLM to generate a primary and secondary class for transactions.
     """
     class TransactionClassification(pydantic.BaseModel):
+        client: str
+        purpose: str
         primary_class: str
         secondary_class: str
+    class TransactionClassificationList(pydantic.BaseModel):
+        transactions: list[TransactionClassification]
     primary_classes, secondary_classes = [], []
-    if t.get('primary_class') is not None and t.get('secondary_class') is not None:
-        primary_classes.append(t['primary_class'])
-        secondary_classes.append(t['secondary_class'])
-        logger.info(f"Skipping transaction {i+1}/{len(transactions)}")
-        return
     logger.info(f"Classifying transaction {i+1}/{len(transactions)}")
+    csv = txns[['client', 'purpose']].to_csv(index=False, header=True)
     response = requests.post(f"{ollama_base_url}/api/generate", json={
         "model": ollama_model,
-        "prompt": prompt(t),
-        "format": TransactionClassification.model_json_schema(),
+        "prompt": prompt(csv),
+        "format": TransactionClassificationList.model_json_schema(),
         "stream": False,
+        "options": {"num_ctx": 4096},
     })
     if response.status_code != 200:
         raise ValueError(response.text)
     logger.info(f"Successfully classified transactions: {response.text}")
     response_content = response.json()['response']
-    classified_transaction = TransactionClassification.model_validate_json(response_content)
-    return classified_transaction.primary_class, classified_transaction.secondary_class
+    lst = TransactionClassificationList.model_validate_json(response_content)
+    primary_classes.extend([t.primary_class for t in lst])
+    secondary_classes.extend([t.secondary_class for t in lst])
+    return primary_classes, secondary_classes
 
 # Insert transactions into the database.
-for i, transaction in df.iterrows():
-    with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
-        logger.info(f"Loading transaction {i+1}/{len(transactions)}")
-        # Check if the transaction already exists, if so, skip it.
-        cursor.execute("SELECT 1 FROM transactions WHERE hash = %s", (transaction['hash'],))
-        if cursor.fetchone() is not None:
-            logger.info(f"Transaction {transaction['hash']} already exists, skipping.")
-            continue
-        cursor.execute("""
-            INSERT INTO transactions (hash, iban, internal, date, client, kind, purpose, amount, balance, currency, primary_class, secondary_class)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (hash)
-            DO NOTHING
-        """, (
-            transaction['hash'],
-            transaction['iban'],
-            transaction['internal'], # Whether the transaction is between our own accounts
-            transaction['date'],
-            transaction['client'],
-            transaction['kind'],
-            transaction['purpose'],
-            transaction['amount'],
-            transaction['balance'],
-            transaction['currency'],
-            *classify(transaction)
-        ))
+slice_size = 20 # Should not be too large, otherwise the LLM context gets exceeded.
+for i in range(0, len(transactions), slice_size):
+    slice = df.iloc[i:i+slice_size]
+    primary_classes, secondary_classes = classify(slice)
+    for j, transaction in slice.iterrows():
+        with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
+            cursor.execute("""
+                INSERT INTO transactions (hash, iban, internal, date, client, kind, purpose, amount, balance, currency, primary_class, secondary_class)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (hash)
+                DO NOTHING
+            """, (
+                transaction['hash'],
+                transaction['iban'],
+                transaction['internal'], # Whether the transaction is between our own accounts
+                transaction['date'],
+                transaction['client'],
+                transaction['kind'],
+                transaction['purpose'],
+                transaction['amount'],
+                transaction['balance'],
+                transaction['currency'],
+                primary_classes[j],
+                secondary_classes[j],
+            ))
+            logger.info(f"Successfully inserted transaction {transaction['hash']} into the database.")
 
 logger.info(f"Successfully inserted {i+1} transactions into the database.")
