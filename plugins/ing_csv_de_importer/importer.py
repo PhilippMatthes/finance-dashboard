@@ -30,9 +30,6 @@ Buchung;Valuta;Auftraggeber/Empf�nger;Buchungstext;Verwendungszweck;Saldo;W�
 import os
 import glob
 import pandas as pd
-import logging
-
-logger = logging.getLogger(__name__)
 
 def parse_header(file):
     with open(file, 'r', encoding='latin1') as f:
@@ -46,10 +43,10 @@ def parse_header(file):
 def fetch_transactions():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     input_dir = os.path.join(base_dir, "input")
-    logger.info(f"Reading ING DE banking transactions from {input_dir}")
+    print(f"Reading ING DE banking transactions from {input_dir}")
     dfs = []
     for file in glob.glob(os.path.join(input_dir, "*.csv")):
-        logger.info(f"Reading file {file}")
+        print(f"Reading file {file}")
         df = pd.read_csv(file, sep=';', encoding='latin1', skiprows=12)
         df['iban'] = parse_header(file) # Only need IBAN for deduplication
         # Fill NaNs in Auftraggeber/Empfaenger with "Unbekannt"

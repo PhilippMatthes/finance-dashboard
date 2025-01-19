@@ -3,11 +3,7 @@ import psycopg2
 import pandas as pd
 import hashlib
 import requests
-import logging
 import pydantic
-import json
-
-logger = logging.getLogger(__name__)
 
 POSTGRES_CONF = {
     'dbname': os.getenv("POSTGRES_DB", "postgres"),
@@ -22,7 +18,7 @@ try:
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1")
 except psycopg2.OperationalError as e:
-    logger.error("Waiting for the DB to be ready...")
+    print("Waiting for the DB to be ready...")
     exit(1)
 
 # Create tables if they don't exist.
@@ -53,29 +49,29 @@ ollama_model = OLLAMA_CONF['OLLAMA_MODEL']
 try:
     requests.get(ollama_base_url)
 except requests.exceptions.ConnectionError:
-    logger.error("Waiting for ollama to be ready...")
+    print("Waiting for ollama to be ready...")
     exit(1)
 # Download the LLM that is used for classification.
-logger.info(f"Downloading LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
+print(f"Downloading LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
 model_response = requests.post(f"{ollama_base_url}/api/pull", json={
     "model": ollama_model, "stream": False,
 })
 if model_response.status_code != 200:
-    logger.error(f"Failed to download LLM: {model_response.text}")
+    print(f"Failed to download LLM: {model_response.text}")
     exit(1)
-logger.info(f"Successfully downloaded LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
-logger.info(f"Loading LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
+print(f"Successfully downloaded LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
+print(f"Loading LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
 load_response = requests.post(f"{ollama_base_url}/api/generate", json={
     "model": ollama_model, "stream": False,
 })
-logger.info(f"Successfully loaded LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
+print(f"Successfully loaded LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
 
 # The plugins will be used to fetch bank transactions and return them in a
 # format that can be processed by the syncer. The plugins should have a function
 # called `fetch_transactions` that return a list of transactions.
 IMPORTER_PLUGINS = os.getenv("IMPORTER_PLUGINS", None)
 if IMPORTER_PLUGINS is None:
-    logger.error("No importer plugin specified.")
+    print("No importer plugin specified.")
     exit(1)
 # Separate multiple plugins by comma.
 IMPORTER_PLUGINS = IMPORTER_PLUGINS.split(',')
@@ -86,9 +82,9 @@ try:
         for plugin in IMPORTER_PLUGINS
     ]
 except ImportError as e:
-    logger.error(f"Failed to import plugin: {e}")
+    print(f"Failed to import plugin: {e}")
     exit(1)
-logger.info(f"Successfully imported plugins {IMPORTER_PLUGINS}")
+print(f"Successfully imported plugins {IMPORTER_PLUGINS}")
 
 # Fetch transactions from all importers.
 transactions = []
@@ -128,8 +124,7 @@ df['amount_abs'] = df['amount'].abs()
 df['internal'] = df.duplicated(subset=['date', 'amount_abs'], keep=False) | df['internal'].fillna(False)
 
 prompt = lambda csv: f"""
-You are a bank transaction classifier. Classify the following transactions into
-a primary and secondary class.
+Classify my bank transactions into primary and secondary classes.
 
 Examples for primary class:
 "Vacation", "Sports", "Food", "Transport", "Health", "Shopping", "Income",
@@ -153,56 +148,60 @@ def classify(txns):
     """
     class TransactionClassification(pydantic.BaseModel):
         client: str
-        purpose: str
-        primary_class: str
-        secondary_class: str
+        primary: str
+        secondary: str
     class TransactionClassificationList(pydantic.BaseModel):
         transactions: list[TransactionClassification]
-    primary_classes, secondary_classes = [], []
-    logger.info(f"Classifying transaction {i+1}/{len(transactions)}")
-    csv = txns[['client', 'purpose']].to_csv(index=False, header=True)
+    csv = txns[['client']].to_csv(index=False, header=True)
+    prompt_txt = prompt(csv)
+    print(f"Prompting for classification: {prompt_txt}")
     response = requests.post(f"{ollama_base_url}/api/generate", json={
         "model": ollama_model,
-        "prompt": prompt(csv),
+        "prompt": prompt_txt,
         "format": TransactionClassificationList.model_json_schema(),
         "stream": False,
         "options": {"num_ctx": 4096},
     })
     if response.status_code != 200:
         raise ValueError(response.text)
-    logger.info(f"Successfully classified transactions: {response.text}")
+    print(f"Successfully classified transactions: {response.text}")
     response_content = response.json()['response']
     lst = TransactionClassificationList.model_validate_json(response_content)
-    primary_classes.extend([t.primary_class for t in lst])
-    secondary_classes.extend([t.secondary_class for t in lst])
-    return primary_classes, secondary_classes
+    return [t.primary for t in lst.transactions], [t.secondary for t in lst.transactions]
 
-# Insert transactions into the database.
-slice_size = 20 # Should not be too large, otherwise the LLM context gets exceeded.
-for i in range(0, len(transactions), slice_size):
-    slice = df.iloc[i:i+slice_size]
+def insert(transaction, primary_class, secondary_class):
+    with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
+        cursor.execute("""
+            INSERT INTO transactions (hash, iban, internal, date, client, kind, purpose, amount, balance, currency, primary_class, secondary_class)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (hash)
+            DO NOTHING
+        """, (
+            transaction['hash'],
+            transaction['iban'],
+            transaction['internal'], # Whether the transaction is between our own accounts
+            transaction['date'],
+            transaction['client'],
+            transaction['kind'],
+            transaction['purpose'],
+            transaction['amount'],
+            transaction['balance'],
+            transaction['currency'],
+            primary_class,
+            secondary_class,
+        ))
+        print(f"Successfully inserted transaction {transaction['hash']} into the database.")
+
+# Make slices of transactions, otherwise the prompt will be too long for the LLM context.
+slice_length = 50
+for i in range(0, len(df), slice_length):
+    slice = df.iloc[i:i+slice_length]
     primary_classes, secondary_classes = classify(slice)
-    for j, transaction in slice.iterrows():
-        with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
-            cursor.execute("""
-                INSERT INTO transactions (hash, iban, internal, date, client, kind, purpose, amount, balance, currency, primary_class, secondary_class)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (hash)
-                DO NOTHING
-            """, (
-                transaction['hash'],
-                transaction['iban'],
-                transaction['internal'], # Whether the transaction is between our own accounts
-                transaction['date'],
-                transaction['client'],
-                transaction['kind'],
-                transaction['purpose'],
-                transaction['amount'],
-                transaction['balance'],
-                transaction['currency'],
-                primary_classes[j],
-                secondary_classes[j],
-            ))
-            logger.info(f"Successfully inserted transaction {transaction['hash']} into the database.")
+    for j, (_, transaction) in enumerate(slice.iterrows()):
+        insert(transaction, primary_classes[j], secondary_classes[j])
 
-logger.info(f"Successfully inserted {i+1} transactions into the database.")
+# Check if the transactions were inserted correctly.
+with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
+    cursor.execute("SELECT COUNT(*) FROM transactions")
+    count = cursor.fetchone()[0]
+print(f"Successfully inserted {count} transactions into the database.")
