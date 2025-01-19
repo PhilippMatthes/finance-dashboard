@@ -34,14 +34,13 @@ with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cur
         amount DECIMAL NOT NULL,
         balance DECIMAL NOT NULL,
         currency TEXT NOT NULL,
-        primary_class TEXT,
-        secondary_class TEXT
+        cls TEXT
     )""")
 
 OLLAMA_CONF = {
     "OLLAMA_HOST": os.getenv("OLLAMA_HOST", "ollama"),
     "OLLAMA_PORT": os.getenv("OLLAMA_PORT", "11434"),
-    "OLLAMA_MODEL": os.getenv("OLLAMA_MODEL", "mistral"),
+    "OLLAMA_MODEL": os.getenv("OLLAMA_MODEL", "llama3.3"),
 }
 # Check if ollama is up.
 ollama_base_url = f"http://{OLLAMA_CONF['OLLAMA_HOST']}:{OLLAMA_CONF['OLLAMA_PORT']}"
@@ -124,16 +123,12 @@ df['amount_abs'] = df['amount'].abs()
 df['internal'] = df.duplicated(subset=['date', 'amount_abs'], keep=False) | df['internal'].fillna(False)
 
 prompt = lambda csv: f"""
-Classify my bank transactions into primary and secondary classes.
+Classify my bank transactions.
 
-Examples for primary class:
+Examples for classifications:
 "Vacation", "Sports", "Food", "Transport", "Health", "Shopping", "Income",
 "Housing", "Utilities", "Entertainment", "Insurance", "Bank", "Donations",
 "Taxes", "Gifts", "Books", ...
-
-Examples for secondary class:
-"Hotel X", "Person X", "Restaurant X", "Supermarket X", "Gym X", "Insurance X",
-"Bank X", "Tax Office X", ...
 
 If unclear, use "Other" as class.
 
@@ -144,15 +139,15 @@ Respond using JSON. Input(csv):
 
 def classify(txns):
     """
-    Call ollama LLM to generate a primary and secondary class for transactions.
+    Call ollama LLM to generate a class for transactions.
     """
     class TransactionClassification(pydantic.BaseModel):
         client: str
-        primary: str
-        secondary: str
+        amount: float
+        cls: str
     class TransactionClassificationList(pydantic.BaseModel):
         transactions: list[TransactionClassification]
-    csv = txns[['client']].to_csv(index=False, header=True)
+    csv = txns[['client', 'amount']].to_csv(index=False, header=True)
     prompt_txt = prompt(csv)
     print(f"Prompting for classification: {prompt_txt}")
     response = requests.post(f"{ollama_base_url}/api/generate", json={
@@ -167,13 +162,13 @@ def classify(txns):
     print(f"Successfully classified transactions: {response.text}")
     response_content = response.json()['response']
     lst = TransactionClassificationList.model_validate_json(response_content)
-    return [t.primary for t in lst.transactions], [t.secondary for t in lst.transactions]
+    return [t.cls for t in lst.transactions]
 
-def insert(transaction, primary_class, secondary_class):
+def insert(transaction, cls):
     with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
         cursor.execute("""
-            INSERT INTO transactions (hash, iban, internal, date, client, kind, purpose, amount, balance, currency, primary_class, secondary_class)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO transactions (hash, iban, internal, date, client, kind, purpose, amount, balance, currency, cls)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (hash)
             DO NOTHING
         """, (
@@ -187,18 +182,17 @@ def insert(transaction, primary_class, secondary_class):
             transaction['amount'],
             transaction['balance'],
             transaction['currency'],
-            primary_class,
-            secondary_class,
+            cls,
         ))
         print(f"Successfully inserted transaction {transaction['hash']} into the database.")
 
 # Make slices of transactions, otherwise the prompt will be too long for the LLM context.
-slice_length = 50
+slice_length = 20
 for i in range(0, len(df), slice_length):
     slice = df.iloc[i:i+slice_length]
-    primary_classes, secondary_classes = classify(slice)
+    classes = classify(slice)
     for j, (_, transaction) in enumerate(slice.iterrows()):
-        insert(transaction, primary_classes[j], secondary_classes[j])
+        insert(transaction, classes[j])
 
 # Check if the transactions were inserted correctly.
 with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
