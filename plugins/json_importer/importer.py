@@ -23,11 +23,14 @@ import os
 import glob
 import json
 import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 def fetch_transactions():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     input_dir = os.path.join(base_dir, "input")
-    print(f"Reading JSON banking transactions from {input_dir}")
+    logger.info(f"Reading JSON banking transactions from {input_dir}")
     for file in glob.glob(os.path.join(input_dir, "*.json")):
         with open(file) as f:
             transactions = json.loads(f.read())

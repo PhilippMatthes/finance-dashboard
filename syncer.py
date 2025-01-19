@@ -2,7 +2,12 @@ import os
 import psycopg2
 import pandas as pd
 import hashlib
+import requests
+import logging
+import pydantic
+import json
 
+logger = logging.getLogger(__name__)
 
 POSTGRES_CONF = {
     'dbname': os.getenv("POSTGRES_DB", "postgres"),
@@ -11,54 +16,19 @@ POSTGRES_CONF = {
     'host': os.getenv("POSTGRES_HOST", "postgres"),
     'port': os.getenv("POSTGRES_PORT", "5432"),
 }
-
 # Check if the DB is up.
 try:
     with psycopg2.connect(**POSTGRES_CONF) as connection:
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1")
 except psycopg2.OperationalError as e:
-    print("Waiting for the DB to be ready...")
+    logger.error("Waiting for the DB to be ready...")
     exit(1)
-
-# The plugins will be used to fetch bank transactions and return them in a
-# format that can be processed by the syncer. The plugins should have a function
-# called `fetch_transactions` that return a list of transactions.
-IMPORTER_PLUGINS = os.getenv("IMPORTER_PLUGINS", None)
-if IMPORTER_PLUGINS is None:
-    print("No importer plugin specified.")
-    exit(1)
-# Separate multiple plugins by comma.
-IMPORTER_PLUGINS = IMPORTER_PLUGINS.split(',')
-# Try to import the plugin.
-try:
-    importers = [
-        __import__(plugin, fromlist=['fetch_transactions'])
-        for plugin in IMPORTER_PLUGINS
-    ]
-except ImportError as e:
-    print(f"Failed to import plugin: {e}")
-    exit(1)
-print(f"Successfully imported plugins {IMPORTER_PLUGINS}")
-
-# The plugin will be used to classify the bank transactions. The plugin should
-# have a function called `classify_transactions` that takes a list of transactions
-# and returns a list of classified transactions.
-CLASSIFIER_PLUGIN = os.getenv("CLASSIFIER_PLUGIN", None)
-if CLASSIFIER_PLUGIN is None:
-    print("No classifier plugin specified.")
-    exit(1)
-# Try to import the plugin.
-try:
-    classifier = __import__(CLASSIFIER_PLUGIN, fromlist=['classify_transactions'])
-except ImportError:
-    print(f"Failed to import plugin: {CLASSIFIER_PLUGIN}")
-    exit(1)
-print(f"Successfully imported plugin: {CLASSIFIER_PLUGIN}")
 
 # Create tables if they don't exist.
 with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
     cursor.execute("""CREATE TABLE IF NOT EXISTS transactions (
+        hash VARCHAR(6) NOT NULL PRIMARY KEY,
         iban TEXT NOT NULL,
         internal BOOLEAN DEFAULT FALSE,
         date DATE NOT NULL,
@@ -69,10 +39,56 @@ with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cur
         balance DECIMAL NOT NULL,
         currency TEXT NOT NULL,
         primary_class TEXT,
-        secondary_class TEXT,
-        hash VARCHAR(255) NOT NULL,
-        PRIMARY KEY (iban, date, client, kind, purpose, amount, balance, currency)
+        secondary_class TEXT
     )""")
+
+OLLAMA_CONF = {
+    "OLLAMA_HOST": os.getenv("OLLAMA_HOST", "ollama"),
+    "OLLAMA_PORT": os.getenv("OLLAMA_PORT", "11434"),
+    "OLLAMA_MODEL": os.getenv("OLLAMA_MODEL", "mistral"),
+}
+# Check if ollama is up.
+ollama_base_url = f"http://{OLLAMA_CONF['OLLAMA_HOST']}:{OLLAMA_CONF['OLLAMA_PORT']}"
+ollama_model = OLLAMA_CONF['OLLAMA_MODEL']
+try:
+    requests.get(ollama_base_url)
+except requests.exceptions.ConnectionError:
+    logger.error("Waiting for ollama to be ready...")
+    exit(1)
+# Download the LLM that is used for classification.
+logger.info(f"Downloading LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
+model_response = requests.post(f"{ollama_base_url}/api/pull", json={
+    "model": ollama_model, "stream": False,
+})
+if model_response.status_code != 200:
+    logger.error(f"Failed to download LLM: {model_response.text}")
+    exit(1)
+logger.info(f"Successfully downloaded LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
+logger.info(f"Loading LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
+load_response = requests.post(f"{ollama_base_url}/api/generate", json={
+    "model": ollama_model, "stream": False,
+})
+logger.info(f"Successfully loaded LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
+
+# The plugins will be used to fetch bank transactions and return them in a
+# format that can be processed by the syncer. The plugins should have a function
+# called `fetch_transactions` that return a list of transactions.
+IMPORTER_PLUGINS = os.getenv("IMPORTER_PLUGINS", None)
+if IMPORTER_PLUGINS is None:
+    logger.error("No importer plugin specified.")
+    exit(1)
+# Separate multiple plugins by comma.
+IMPORTER_PLUGINS = IMPORTER_PLUGINS.split(',')
+# Try to import the plugin.
+try:
+    importers = [
+        __import__(plugin, fromlist=['fetch_transactions'])
+        for plugin in IMPORTER_PLUGINS
+    ]
+except ImportError as e:
+    logger.error(f"Failed to import plugin: {e}")
+    exit(1)
+logger.info(f"Successfully imported plugins {IMPORTER_PLUGINS}")
 
 # Fetch transactions from all importers.
 transactions = []
@@ -80,6 +96,20 @@ for importer in importers:
     transactions.extend(importer.fetch_transactions())
 
 df = pd.DataFrame(transactions)
+
+# Calculate a hash for each transaction to make it identifiable.
+def sha256(t):
+    h = hashlib.sha256()
+    h.update(t['iban'].encode())
+    h.update(str(t['date']).encode())
+    h.update(t['client'].encode())
+    h.update(t['kind'].encode())
+    h.update(t['purpose'].encode())
+    h.update(str(t['amount']).encode())
+    h.update(str(t['balance']).encode())
+    h.update(t['currency'].encode())
+    return h.hexdigest()[:6]
+df['hash'] = df.apply(sha256, axis=1)
 
 # Drop duplicate transactions to avoid normal transactions being marked as internal.
 df.drop_duplicates(subset=['date', 'amount', 'client', 'purpose'], inplace=True)
@@ -91,32 +121,69 @@ df['amount_abs'] = df['amount'].abs()
 # already marked some transactions as internal.
 df['internal'] = df.duplicated(subset=['date', 'amount_abs'], keep=False) | df['internal'].fillna(False)
 
-# Classify transactions
-df['primary_class'], df['secondary_class'] = zip(*df.apply(classifier.classify_transaction, axis=1))
+prompt = lambda t: f"""
+You are a bank transaction classifier. Classify the following transaction into a
+primary and secondary class.
 
-# Calculate a hash for each transaction to create links in Grafana.
-def sha256(t):
-    h = hashlib.sha256()
-    h.update(t['iban'].encode())
-    h.update(str(t['date']).encode())
-    h.update(t['client'].encode())
-    h.update(t['kind'].encode())
-    h.update(t['purpose'].encode())
-    h.update(str(t['amount']).encode())
-    h.update(str(t['balance']).encode())
-    h.update(t['currency'].encode())
-    return h.hexdigest()
-df['hash'] = df.apply(sha256, axis=1)
+Examples for primary class:
+"Vacation", "Sports", "Food", "Transport", "Health", "Shopping", "Income",
+"Housing", "Utilities", "Entertainment", "Insurance", "Bank", "Donations",
+"Taxes", "Gifts", "Books", ...
+
+Examples for secondary class:
+"Hotel X", "Person X", "Restaurant X", "Supermarket X", "Gym X", "Insurance X",
+"Bank X", "Tax Office X", ...
+
+If unclear, use "Other" as class.
+
+Respond using JSON. Input: {json.dumps({
+    k: v for k, v in t.items() if k in {'client', 'kind', 'purpose'}
+}, indent=2)}
+"""
+
+def classify(t):
+    """
+    Call ollama LLM to generate a primary and secondary class for the transaction.
+    """
+    class TransactionClassification(pydantic.BaseModel):
+        primary_class: str
+        secondary_class: str
+    primary_classes, secondary_classes = [], []
+    if t.get('primary_class') is not None and t.get('secondary_class') is not None:
+        primary_classes.append(t['primary_class'])
+        secondary_classes.append(t['secondary_class'])
+        logger.info(f"Skipping transaction {i+1}/{len(transactions)}")
+        return
+    logger.info(f"Classifying transaction {i+1}/{len(transactions)}")
+    response = requests.post(f"{ollama_base_url}/api/generate", json={
+        "model": ollama_model,
+        "prompt": prompt(t),
+        "format": TransactionClassification.model_json_schema(),
+        "stream": False,
+    })
+    if response.status_code != 200:
+        raise ValueError(response.text)
+    logger.info(f"Successfully classified transactions: {response.text}")
+    response_content = response.json()['response']
+    classified_transaction = TransactionClassification.model_validate_json(response_content)
+    return classified_transaction.primary_class, classified_transaction.secondary_class
 
 # Insert transactions into the database.
-with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
-    for i, transaction in df.iterrows():
+for i, transaction in df.iterrows():
+    with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
+        logger.info(f"Loading transaction {i+1}/{len(transactions)}")
+        # Check if the transaction already exists, if so, skip it.
+        cursor.execute("SELECT 1 FROM transactions WHERE hash = %s", (transaction['hash'],))
+        if cursor.fetchone() is not None:
+            logger.info(f"Transaction {transaction['hash']} already exists, skipping.")
+            continue
         cursor.execute("""
-            INSERT INTO transactions (iban, internal, date, client, kind, purpose, amount, balance, currency, primary_class, secondary_class, hash)
+            INSERT INTO transactions (hash, iban, internal, date, client, kind, purpose, amount, balance, currency, primary_class, secondary_class)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (iban, date, client, kind, purpose, amount, balance, currency)
+            ON CONFLICT (hash)
             DO NOTHING
         """, (
+            transaction['hash'],
             transaction['iban'],
             transaction['internal'], # Whether the transaction is between our own accounts
             transaction['date'],
@@ -126,9 +193,7 @@ with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cur
             transaction['amount'],
             transaction['balance'],
             transaction['currency'],
-            transaction['primary_class'],
-            transaction['secondary_class'],
-            transaction['hash'],
+            *classify(transaction)
         ))
 
-print(f"Successfully inserted {i+1} transactions into the database.")
+logger.info(f"Successfully inserted {i+1} transactions into the database.")
