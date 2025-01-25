@@ -38,12 +38,12 @@ with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cur
     )""")
 
 OLLAMA_CONF = {
-    "OLLAMA_HOST": os.getenv("OLLAMA_HOST", "ollama"),
-    "OLLAMA_PORT": os.getenv("OLLAMA_PORT", "11434"),
-    "OLLAMA_MODEL": os.getenv("OLLAMA_MODEL", "llama3.3"),
+    # Ollama needs to be running locally.
+    "OLLAMA_URL": os.getenv("OLLAMA_URL", "http://host.docker.internal:11434"),
+    "OLLAMA_MODEL": os.getenv("OLLAMA_MODEL", "mistral"),
 }
 # Check if ollama is up.
-ollama_base_url = f"http://{OLLAMA_CONF['OLLAMA_HOST']}:{OLLAMA_CONF['OLLAMA_PORT']}"
+ollama_base_url = OLLAMA_CONF['OLLAMA_URL']
 ollama_model = OLLAMA_CONF['OLLAMA_MODEL']
 try:
     requests.get(ollama_base_url)
@@ -121,6 +121,34 @@ df['amount_abs'] = df['amount'].abs()
 # Only override None values in the internal column, in case the importer has
 # already marked some transactions as internal.
 df['internal'] = df.duplicated(subset=['date', 'amount_abs'], keep=False) | df['internal'].fillna(False)
+# Fill the cls column with "Unclassified" for now, if the field is missing.
+if 'cls' not in df.columns:
+    df['cls'] = None
+df['cls'] = df['cls'].fillna("Unclassified")
+
+def insert(transaction):
+    with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
+        cursor.execute("""
+            INSERT INTO transactions (hash, iban, internal, date, client, kind, purpose, amount, balance, currency, cls)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (hash)
+            DO NOTHING
+        """, (
+            transaction['hash'],
+            transaction['iban'],
+            transaction['internal'], # Whether the transaction is between our own accounts
+            transaction['date'],
+            transaction['client'],
+            transaction['kind'],
+            transaction['purpose'],
+            transaction['amount'],
+            transaction['balance'],
+            transaction['currency'],
+            transaction['cls'],
+        ))
+        print(f"Successfully inserted transaction {transaction['hash']} into the database.")
+for _, tx in df.iterrows():
+    insert(tx)
 
 prompt = lambda csv: f"""
 Classify my bank transactions.
@@ -142,57 +170,55 @@ def classify(txns):
     Call ollama LLM to generate a class for transactions.
     """
     class TransactionClassification(pydantic.BaseModel):
+        hash: str
         client: str
         amount: float
         cls: str
     class TransactionClassificationList(pydantic.BaseModel):
         transactions: list[TransactionClassification]
-    csv = txns[['client', 'amount']].to_csv(index=False, header=True)
-    prompt_txt = prompt(csv)
-    print(f"Prompting for classification: {prompt_txt}")
-    response = requests.post(f"{ollama_base_url}/api/generate", json={
-        "model": ollama_model,
-        "prompt": prompt_txt,
-        "format": TransactionClassificationList.model_json_schema(),
-        "stream": False,
-        "options": {"num_ctx": 4096},
-    })
-    if response.status_code != 200:
-        raise ValueError(response.text)
-    print(f"Successfully classified transactions: {response.text}")
-    response_content = response.json()['response']
-    lst = TransactionClassificationList.model_validate_json(response_content)
-    return [t.cls for t in lst.transactions]
+    txns_to_classify = txns[['hash', 'client', 'amount']]
+    while len(txns_to_classify) > 0:
+        csv = txns_to_classify.to_csv(index=False, header=True)
+        prompt_txt = prompt(csv)
+        print(f"Prompting for classification: {prompt_txt}")
+        response = requests.post(f"{ollama_base_url}/api/generate", json={
+            "model": ollama_model,
+            "prompt": prompt_txt,
+            "format": TransactionClassificationList.model_json_schema(),
+            "stream": False,
+            "options": {"num_ctx": 4096},
+        })
+        if response.status_code != 200:
+            raise ValueError(response.text)
+        print(f"Successfully classified transactions: {response.text}")
+        response_content = response.json()['response']
+        try:
+            lst = TransactionClassificationList.model_validate_json(response_content)
+        except pydantic.ValidationError as e:
+            print(f"Failed to validate response: {e}")
+            print(f"Trying again...")
+            continue
+        # Set the class value on the original dataframe.
+        for t in lst.transactions:
+            # Check if the hash is in the original dataframe.
+            if t.hash not in txns['hash'].values:
+                print(f"Hallucination detected: transaction {t.hash} not a part of the original dataframe.")
+                continue
+            txns.loc[txns['hash'] == t.hash, 'cls'] = t.cls
+        # Remove the classified transactions from the list.
+        txns_to_classify = txns_to_classify[~txns_to_classify['hash'].isin([t.hash for t in lst.transactions])]
+    return txns
 
-def insert(transaction, cls):
+def update(transaction_hash, cls):
     with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
-        cursor.execute("""
-            INSERT INTO transactions (hash, iban, internal, date, client, kind, purpose, amount, balance, currency, cls)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (hash)
-            DO NOTHING
-        """, (
-            transaction['hash'],
-            transaction['iban'],
-            transaction['internal'], # Whether the transaction is between our own accounts
-            transaction['date'],
-            transaction['client'],
-            transaction['kind'],
-            transaction['purpose'],
-            transaction['amount'],
-            transaction['balance'],
-            transaction['currency'],
-            cls,
-        ))
-        print(f"Successfully inserted transaction {transaction['hash']} into the database.")
-
+        cursor.execute("UPDATE transactions SET cls = %s WHERE hash = %s", (cls, transaction_hash))
 # Make slices of transactions, otherwise the prompt will be too long for the LLM context.
 slice_length = 20
 for i in range(0, len(df), slice_length):
     slice = df.iloc[i:i+slice_length]
-    classes = classify(slice)
-    for j, (_, transaction) in enumerate(slice.iterrows()):
-        insert(transaction, classes[j])
+    classify(slice)
+    for _, tx in slice.iterrows():
+        update(tx['hash'], tx['cls'])
 
 # Check if the transactions were inserted correctly.
 with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:

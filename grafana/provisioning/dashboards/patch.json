@@ -141,51 +141,36 @@
     "list": [
       {
         "current": {
-          "text": "77bccc48d4ab1b507f33a98e840f971d0e30ef8571aebfb415b9e259012208eb",
-          "value": "77bccc48d4ab1b507f33a98e840f971d0e30ef8571aebfb415b9e259012208eb"
+          "text": "528e06",
+          "value": "528e06"
         },
         "description": "Hash of the transaction",
         "name": "hash",
         "options": [
           {
             "selected": true,
-            "text": "77bccc48d4ab1b507f33a98e840f971d0e30ef8571aebfb415b9e259012208eb",
-            "value": "77bccc48d4ab1b507f33a98e840f971d0e30ef8571aebfb415b9e259012208eb"
+            "text": "528e06",
+            "value": "528e06"
           }
         ],
-        "query": "77bccc48d4ab1b507f33a98e840f971d0e30ef8571aebfb415b9e259012208eb",
+        "query": "528e06",
         "type": "textbox"
       },
       {
         "current": {
-          "text": "Custom",
-          "value": "Custom"
+          "text": "",
+          "value": ""
         },
-        "name": "primary_class",
+        "label": "Transaction classification",
+        "name": "cls",
         "options": [
           {
             "selected": true,
-            "text": "Custom",
-            "value": "Custom"
+            "text": "",
+            "value": ""
           }
         ],
-        "query": "Custom",
-        "type": "textbox"
-      },
-      {
-        "current": {
-          "text": "Custom",
-          "value": "Custom"
-        },
-        "name": "secondary_class",
-        "options": [
-          {
-            "selected": true,
-            "text": "Custom",
-            "value": "Custom"
-          }
-        ],
-        "query": "Custom",
+        "query": "",
         "type": "textbox"
       }
     ]

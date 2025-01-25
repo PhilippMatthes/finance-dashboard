@@ -18,7 +18,7 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": 2,
+  "id": 1,
   "links": [],
   "panels": [
     {
@@ -446,92 +446,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 6,
+        "w": 12,
         "x": 12,
-        "y": 12
-      },
-      "id": 8,
-      "options": {
-        "displayLabels": [],
-        "legend": {
-          "displayMode": "list",
-          "placement": "right",
-          "showLegend": true
-        },
-        "pieType": "donut",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "limit": 10,
-          "values": true
-        },
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "11.3.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "P44368ADAD746BC27"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "WITH total_income AS (\n    SELECT \n        SUM(amount) AS total_income\n    FROM \n        transactions\n    WHERE \n        amount > 0\n        AND date BETWEEN $__timeFrom() AND $__timeTo()\n        AND internal = false\n),\ntotal_expenses AS (\n    SELECT \n        SUM(amount) AS total_expenses\n    FROM \n        transactions\n    WHERE \n        amount < 0\n        AND date BETWEEN $__timeFrom() AND $__timeTo()\n        AND internal = false\n),\nexpenses_by_class AS (\n    SELECT \n        secondary_class,\n        ABS(SUM(amount)) AS total_amount\n    FROM \n        transactions\n    WHERE \n        amount < 0\n        AND date BETWEEN $__timeFrom() AND $__timeTo()\n        AND internal = false\n    GROUP BY \n        secondary_class\n    HAVING \n        SUM(amount) <> 0\n)\nSELECT \n    secondary_class,\n    total_amount\nFROM \n    expenses_by_class\nUNION ALL\nSELECT \n    'Free Income' AS secondary_class,\n    (SELECT total_income FROM total_income) + (SELECT total_expenses FROM total_expenses) AS total_amount\nORDER BY \n    total_amount DESC;",
-          "refId": "A",
-          "sql": {
-            "columns": [
-              {
-                "parameters": [],
-                "type": "function"
-              }
-            ],
-            "groupBy": [
-              {
-                "property": {
-                  "type": "string"
-                },
-                "type": "groupBy"
-              }
-            ],
-            "limit": 50
-          }
-        }
-      ],
-      "title": "",
-      "type": "piechart"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "P44368ADAD746BC27"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            }
-          },
-          "fieldMinMax": false,
-          "mappings": []
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
-        "x": 18,
         "y": 12
       },
       "id": 3,
@@ -566,7 +482,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH total_income AS (\n    SELECT \n        SUM(amount) AS total_income\n    FROM \n        transactions\n    WHERE \n        amount > 0\n        AND date BETWEEN $__timeFrom() AND $__timeTo()\n        AND internal = false\n),\ntotal_expenses AS (\n    SELECT \n        SUM(amount) AS total_expenses\n    FROM \n        transactions\n    WHERE \n        amount < 0\n        AND date BETWEEN $__timeFrom() AND $__timeTo()\n        AND internal = false\n),\nexpenses_by_class AS (\n    SELECT \n        primary_class,\n        ABS(SUM(amount)) AS total_amount\n    FROM \n        transactions\n    WHERE \n        amount < 0\n        AND date BETWEEN $__timeFrom() AND $__timeTo()\n        AND internal = false\n    GROUP BY \n        primary_class\n    HAVING \n        SUM(amount) <> 0\n)\nSELECT \n    primary_class,\n    total_amount\nFROM \n    expenses_by_class\nUNION ALL\nSELECT \n    'Free Income' AS primary_class,\n    (SELECT total_income FROM total_income) + (SELECT total_expenses FROM total_expenses) AS total_amount\nORDER BY \n    total_amount DESC;",
+          "rawSql": "WITH total_income AS (\n    SELECT \n        SUM(amount) AS total_income\n    FROM \n        transactions\n    WHERE \n        amount > 0\n        AND date BETWEEN $__timeFrom() AND $__timeTo()\n        AND internal = false\n),\ntotal_expenses AS (\n    SELECT \n        SUM(amount) AS total_expenses\n    FROM \n        transactions\n    WHERE \n        amount < 0\n        AND date BETWEEN $__timeFrom() AND $__timeTo()\n        AND internal = false\n),\nexpenses_by_class AS (\n    SELECT \n        cls,\n        ABS(SUM(amount)) AS total_amount\n    FROM \n        transactions\n    WHERE \n        amount < 0\n        AND date BETWEEN $__timeFrom() AND $__timeTo()\n        AND internal = false\n    GROUP BY \n        cls\n    HAVING \n        SUM(amount) <> 0\n)\nSELECT \n    cls,\n    total_amount\nFROM \n    expenses_by_class\nUNION ALL\nSELECT \n    'Free Income' AS cls,\n    (SELECT total_income FROM total_income) + (SELECT total_expenses FROM total_expenses) AS total_amount\nORDER BY \n    total_amount DESC;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -652,7 +568,7 @@
       },
       "gridPos": {
         "h": 12,
-        "w": 12,
+        "w": 24,
         "x": 0,
         "y": 20
       },
@@ -690,7 +606,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT \n    DATE_TRUNC('${granularity}', date) AS period,\n    primary_class,\n    ABS(SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END)) AS Expense\nFROM \n    transactions\nWHERE \n    date BETWEEN $__timeFrom() AND $__timeTo() AND not internal\nGROUP BY \n    DATE_TRUNC('${granularity}', date), primary_class\nORDER BY \n    period, Expense;",
+          "rawSql": "SELECT \n    DATE_TRUNC('${granularity}', date) AS period,\n    cls,\n    ABS(SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END)) AS Expense\nFROM \n    transactions\nWHERE \n    date BETWEEN $__timeFrom() AND $__timeTo() AND not internal\nGROUP BY \n    DATE_TRUNC('${granularity}', date), cls\nORDER BY \n    period, Expense;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -731,157 +647,7 @@
         {
           "id": "groupingToMatrix",
           "options": {
-            "columnField": "primary_class",
-            "emptyValue": "null",
-            "rowField": "period",
-            "valueField": "expense"
-          }
-        }
-      ],
-      "type": "barchart"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "P44368ADAD746BC27"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic-by-name"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "fillOpacity": 88,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "lineWidth": 2,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "decimals": 1,
-          "fieldMinMax": false,
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "currencyEUR"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byType",
-              "options": "string"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "dateTimeAsIso"
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 12,
-        "w": 12,
-        "x": 12,
-        "y": 20
-      },
-      "id": 9,
-      "options": {
-        "barRadius": 0,
-        "barWidth": 0.88,
-        "fullHighlight": false,
-        "groupWidth": 0.7,
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "right",
-          "showLegend": true
-        },
-        "orientation": "auto",
-        "showValue": "never",
-        "stacking": "normal",
-        "text": {},
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        },
-        "xField": "month\\primary_class",
-        "xTickLabelRotation": 0,
-        "xTickLabelSpacing": 200
-      },
-      "pluginVersion": "11.3.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "P44368ADAD746BC27"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT \n    DATE_TRUNC('${granularity}', date) AS period,\n    secondary_class,\n    ABS(SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END)) AS Expense\nFROM \n    transactions\nWHERE \n    date BETWEEN $__timeFrom() AND $__timeTo() AND not internal\nGROUP BY \n    DATE_TRUNC('${granularity}', date), secondary_class\nORDER BY \n    period, Expense;",
-          "refId": "A",
-          "sql": {
-            "columns": [
-              {
-                "parameters": [
-                  {
-                    "name": "amount",
-                    "type": "functionParameter"
-                  }
-                ],
-                "type": "function"
-              },
-              {
-                "parameters": [
-                  {
-                    "name": "date",
-                    "type": "functionParameter"
-                  }
-                ],
-                "type": "function"
-              }
-            ],
-            "groupBy": [
-              {
-                "property": {
-                  "type": "string"
-                },
-                "type": "groupBy"
-              }
-            ],
-            "limit": 50
-          },
-          "table": "transactions"
-        }
-      ],
-      "title": "Expenses: Secondary Class",
-      "transformations": [
-        {
-          "id": "groupingToMatrix",
-          "options": {
-            "columnField": "secondary_class",
+            "columnField": "cls",
             "emptyValue": "null",
             "rowField": "period",
             "valueField": "expense"
@@ -1073,7 +839,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  hash,\n  date,\n  kind,\n  client,\n  purpose,\n  amount,\n  currency,\n  primary_class,\n  secondary_class,\n  'Change classification' AS link,\n  CASE\n    WHEN internal AND amount < 0 THEN 'Internal Transfer (Set as Expense)'\n    WHEN internal AND amount >= 0 THEN 'Internal Transfer (Set as Income)'\n    WHEN NOT internal AND amount < 0 THEN 'Expense (Set as Internal Transfer)'\n    WHEN NOT internal AND amount >= 0 THEN 'Income (Set as Internal Transfer)'\n  END AS internal\nFROM\n  transactions\nWHERE\n  date BETWEEN $__timeFrom()\n  AND $__timeTo()\nORDER BY\n  date DESC;",
+          "rawSql": "SELECT\n  hash,\n  date,\n  kind,\n  client,\n  purpose,\n  amount,\n  currency,\n  cls,\n  'Change classification' AS link,\n  CASE\n    WHEN internal AND amount < 0 THEN 'Internal Transfer (Set as Expense)'\n    WHEN internal AND amount >= 0 THEN 'Internal Transfer (Set as Income)'\n    WHEN NOT internal AND amount < 0 THEN 'Expense (Set as Internal Transfer)'\n    WHEN NOT internal AND amount >= 0 THEN 'Income (Set as Internal Transfer)'\n  END AS internal\nFROM\n  transactions\nWHERE\n  date BETWEEN $__timeFrom()\n  AND $__timeTo()\nORDER BY\n  date DESC;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -1168,6 +934,6 @@
   "timezone": "browser",
   "title": "Finance Dashboard",
   "uid": "fe86cmoo161vkd",
-  "version": 2,
+  "version": 5,
   "weekStart": ""
 }

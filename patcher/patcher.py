@@ -55,13 +55,11 @@ def patch():
         return jsonify({"error": "Missing 'hash' parameter"}), 400
 
     update_args = (
-        request.args.get('primary_class'),
-        request.args.get('secondary_class'),
+        request.args.get('cls'),
     )
     update_query = """
     UPDATE transactions SET
-        primary_class = %s,
-        secondary_class = %s
+        cls = %s,
     WHERE hash = %s
     """
 
