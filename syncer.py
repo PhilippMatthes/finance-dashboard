@@ -37,34 +37,6 @@ with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cur
         cls TEXT
     )""")
 
-OLLAMA_CONF = {
-    # Ollama needs to be running locally.
-    "OLLAMA_URL": os.getenv("OLLAMA_URL", "http://host.docker.internal:11434"),
-    "OLLAMA_MODEL": os.getenv("OLLAMA_MODEL", "mistral"),
-}
-# Check if ollama is up.
-ollama_base_url = OLLAMA_CONF['OLLAMA_URL']
-ollama_model = OLLAMA_CONF['OLLAMA_MODEL']
-try:
-    requests.get(ollama_base_url)
-except requests.exceptions.ConnectionError:
-    print("Waiting for ollama to be ready...")
-    exit(1)
-# Download the LLM that is used for classification.
-print(f"Downloading LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
-model_response = requests.post(f"{ollama_base_url}/api/pull", json={
-    "model": ollama_model, "stream": False,
-})
-if model_response.status_code != 200:
-    print(f"Failed to download LLM: {model_response.text}")
-    exit(1)
-print(f"Successfully downloaded LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
-print(f"Loading LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
-load_response = requests.post(f"{ollama_base_url}/api/generate", json={
-    "model": ollama_model, "stream": False,
-})
-print(f"Successfully loaded LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
-
 # The plugins will be used to fetch bank transactions and return them in a
 # format that can be processed by the syncer. The plugins should have a function
 # called `fetch_transactions` that return a list of transactions.
@@ -149,6 +121,34 @@ def insert(transaction):
         print(f"Successfully inserted transaction {transaction['hash']} into the database.")
 for _, tx in df.iterrows():
     insert(tx)
+
+OLLAMA_CONF = {
+    # Ollama needs to be running locally.
+    "OLLAMA_URL": os.getenv("OLLAMA_URL", "http://host.docker.internal:11434"),
+    "OLLAMA_MODEL": os.getenv("OLLAMA_MODEL", "mistral"),
+}
+# Check if ollama is up.
+ollama_base_url = OLLAMA_CONF['OLLAMA_URL']
+ollama_model = OLLAMA_CONF['OLLAMA_MODEL']
+try:
+    requests.get(ollama_base_url)
+except requests.exceptions.ConnectionError:
+    print("Waiting for ollama to be ready...")
+    exit(1)
+# Download the LLM that is used for classification.
+print(f"Downloading LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
+model_response = requests.post(f"{ollama_base_url}/api/pull", json={
+    "model": ollama_model, "stream": False,
+})
+if model_response.status_code != 200:
+    print(f"Failed to download LLM: {model_response.text}")
+    exit(1)
+print(f"Successfully downloaded LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
+print(f"Loading LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
+load_response = requests.post(f"{ollama_base_url}/api/generate", json={
+    "model": ollama_model, "stream": False,
+})
+print(f"Successfully loaded LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
 
 prompt = lambda csv: f"""
 Classify my bank transactions.
