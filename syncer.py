@@ -4,6 +4,7 @@ import pandas as pd
 import hashlib
 import requests
 import pydantic
+import math
 
 POSTGRES_CONF = {
     'dbname': os.getenv("POSTGRES_DB", "postgres"),
@@ -37,6 +38,9 @@ with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cur
         cls TEXT
     )""")
 
+############## Importer step
+
+
 # The plugins will be used to fetch bank transactions and return them in a
 # format that can be processed by the syncer. The plugins should have a function
 # called `fetch_transactions` that return a list of transactions.
@@ -57,46 +61,42 @@ except ImportError as e:
     exit(1)
 print(f"Successfully imported plugins {IMPORTER_PLUGINS}")
 
-# Fetch transactions from all importers.
-transactions = []
-for importer in importers:
-    transactions.extend(importer.fetch_transactions())
+def get_transactions_df():
+    # Fetch transactions from all importers.
+    transactions = []
+    for importer in importers:
+        transactions.extend(importer.fetch_transactions())
 
-df = pd.DataFrame(transactions)
+    df = pd.DataFrame(transactions)
 
-# Calculate a hash for each transaction to make it identifiable.
-def sha256(t):
-    h = hashlib.sha256()
-    h.update(t['iban'].encode())
-    h.update(str(t['date']).encode())
-    h.update(t['client'].encode())
-    h.update(t['kind'].encode())
-    h.update(t['purpose'].encode())
-    h.update(str(t['amount']).encode())
-    h.update(str(t['balance']).encode())
-    h.update(t['currency'].encode())
-    return h.hexdigest()[:6]
-df['hash'] = df.apply(sha256, axis=1)
+    # Calculate a hash for each transaction to make it identifiable.
+    def sha256(t):
+        h = hashlib.sha256()
+        h.update(t['iban'].encode())
+        h.update(str(t['date']).encode())
+        h.update(t['client'].encode())
+        h.update(t['kind'].encode())
+        h.update(t['purpose'].encode())
+        h.update(str(t['amount']).encode())
+        h.update(str(t['balance']).encode())
+        h.update(t['currency'].encode())
+        return h.hexdigest()[:6]
+    df['hash'] = df.apply(sha256, axis=1)
 
-# Drop transactions that are already in the database.
-with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
-    cursor.execute("SELECT hash FROM transactions")
-    hashes = set(h[0] for h in cursor.fetchall())
-df = df[~df['hash'].isin(hashes)]
+    # Drop duplicate transactions to avoid normal transactions being marked as internal.
+    df.drop_duplicates(subset=['date', 'amount', 'client', 'purpose'], inplace=True)
 
-# Drop duplicate transactions to avoid normal transactions being marked as internal.
-df.drop_duplicates(subset=['date', 'amount', 'client', 'purpose'], inplace=True)
-
-# Mark transactions seen on two accounts as internal in the column 'internal'.
-# These aren't any expenses or income since they are between our own accounts.
-df['amount_abs'] = df['amount'].abs()
-# Only override None values in the internal column, in case the importer has
-# already marked some transactions as internal.
-df['internal'] = df.duplicated(subset=['date', 'amount_abs'], keep=False) | df['internal'].fillna(False)
-# Fill the cls column with "Unclassified" for now, if the field is missing.
-if 'cls' not in df.columns:
-    df['cls'] = None
-df['cls'] = df['cls'].fillna("Unclassified")
+    # Mark transactions seen on two accounts as internal in the column 'internal'.
+    # These aren't any expenses or income since they are between our own accounts.
+    df['amount_abs'] = df['amount'].abs()
+    # Only override None values in the internal column, in case the importer has
+    # already marked some transactions as internal.
+    df['internal'] = df.duplicated(subset=['date', 'amount_abs'], keep=False) | df['internal'].fillna(False)
+    # Fill the cls column with "Unclassified" for now, if the field is missing.
+    if 'cls' not in df.columns:
+        df['cls'] = None
+    df['cls'] = df['cls'].fillna("Unclassified")
+    return df
 
 def insert(transaction):
     with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
@@ -119,13 +119,26 @@ def insert(transaction):
             transaction['cls'],
         ))
         print(f"Successfully inserted transaction {transaction['hash']} into the database.")
+
+# Insert new transactions into the database.
+df = get_transactions_df()
+with (
+    psycopg2.connect(**POSTGRES_CONF) as connection,
+    connection.cursor() as cursor
+):
+    cursor.execute("SELECT hash FROM transactions")
+    hashes = set(h[0] for h in cursor.fetchall())
+df = df[~df['hash'].isin(hashes)]
 for _, tx in df.iterrows():
     insert(tx)
+
+
+############## Classification step
 
 OLLAMA_CONF = {
     # Ollama needs to be running locally.
     "OLLAMA_URL": os.getenv("OLLAMA_URL", "http://host.docker.internal:11434"),
-    "OLLAMA_MODEL": os.getenv("OLLAMA_MODEL", "mistral"),
+    "OLLAMA_MODEL": os.getenv("OLLAMA_MODEL", "llama3.2"),
 }
 # Check if ollama is up.
 ollama_base_url = OLLAMA_CONF['OLLAMA_URL']
@@ -150,20 +163,16 @@ load_response = requests.post(f"{ollama_base_url}/api/generate", json={
 })
 print(f"Successfully loaded LLM: {OLLAMA_CONF['OLLAMA_MODEL']}")
 
-prompt = lambda csv: f"""
-Classify my bank transactions.
 
-Examples for classifications:
-"Vacation", "Sports", "Food", "Transport", "Health", "Shopping", "Income",
-"Housing", "Utilities", "Entertainment", "Insurance", "Bank", "Donations",
-"Taxes", "Gifts", "Books", ...
-
-If unclear, use "Other" as class.
-
-Respond using JSON. Input(csv):
-
-{csv}
-"""
+def prompt(txns):
+    input = "\n".join([
+        f"Hash: {tx['hash']}, Client: {tx['client']}, "
+        f"Purpose: {tx['purpose']}, Amount: {tx['amount']}"
+        for _, tx in txns.iterrows()
+    ])
+    with open("prompt.tpl", "r") as f:
+        tpl = f.read()
+    return tpl.replace("{{ input }}", input)
 
 def classify(txns):
     """
@@ -171,22 +180,20 @@ def classify(txns):
     """
     class TransactionClassification(pydantic.BaseModel):
         hash: str
-        client: str
-        amount: float
         cls: str
     class TransactionClassificationList(pydantic.BaseModel):
         transactions: list[TransactionClassification]
-    txns_to_classify = txns[['hash', 'client', 'amount']]
+    txns_to_classify = txns[['hash', 'client', 'purpose', 'amount']]
     while len(txns_to_classify) > 0:
-        csv = txns_to_classify.to_csv(index=False, header=True)
-        prompt_txt = prompt(csv)
+        prompt_txt = prompt(txns_to_classify)
         print(f"Prompting for classification: {prompt_txt}")
         response = requests.post(f"{ollama_base_url}/api/generate", json={
             "model": ollama_model,
             "prompt": prompt_txt,
             "format": TransactionClassificationList.model_json_schema(),
             "stream": False,
-            "options": {"num_ctx": 4096},
+            # Modify this if the context length is unsupported by the model.
+            "options": {"num_ctx": math.pow(2, 15)},
         })
         if response.status_code != 200:
             raise ValueError(response.text)
@@ -212,6 +219,10 @@ def classify(txns):
 def update(transaction_hash, cls):
     with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
         cursor.execute("UPDATE transactions SET cls = %s WHERE hash = %s", (cls, transaction_hash))
+
+df = get_transactions_df()
+# Only classify transactions that have cls=Unclassified
+df = df[df['cls'] == "Unclassified"]
 # Make slices of transactions, otherwise the prompt will be too long for the LLM context.
 slice_length = 20
 for i in range(0, len(df), slice_length):
@@ -224,4 +235,4 @@ for i in range(0, len(df), slice_length):
 with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
     cursor.execute("SELECT COUNT(*) FROM transactions")
     count = cursor.fetchone()[0]
-print(f"Successfully inserted {count} transactions into the database.")
+print(f"Successfully classified {count} transactions into the database.")
