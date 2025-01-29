@@ -32,11 +32,15 @@ services:
   syncer:
     build: .
     environment:
+      PYTHONUNBUFFERED: 1
       POSTGRES_PASSWORD: secret
-      # Plugin conf
+      # Override the default importer plugins with your own.
       IMPORTER_PLUGINS: ${IMPORTER_PLUGINS:-plugins.example_importer.importer,plugins.json_importer.importer}
-      CLASSIFIER_PLUGIN: ${CLASSIFIER_PLUGIN:-plugins.example_classifier.classifier}
+      # Override the ollama instance you want to use.
+      # Default is ollama running on the host system on its default port.
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
     restart: on-failure
 
 volumes:
+  ollama_data:
   postgres_data:
