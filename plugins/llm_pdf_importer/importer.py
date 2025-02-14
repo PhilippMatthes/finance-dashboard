@@ -13,7 +13,7 @@ import math
 OLLAMA_CONF = {
     # Ollama needs to be running locally.
     "OLLAMA_URL": os.getenv("OLLAMA_URL", "http://host.docker.internal:11434"),
-    "OLLAMA_MODEL": os.getenv("OLLAMA_MODEL", "mistral"),
+    "OLLAMA_MODEL": os.getenv("OLLAMA_MODEL", "llama3.2"),
 }
 # Check if ollama is up.
 ollama_base_url = OLLAMA_CONF['OLLAMA_URL']
@@ -88,7 +88,7 @@ def parse_account_statement_pdfs(pdfs):
             pdf_text += page.extract_text()
 
         metadata_prompt = metadata_prompt_tpl(pdf_text)
-        print(f"Prompting LLM for bank statement metadata: {metadata_prompt}")
+        print(f"Prompting LLM for bank statement metadata...")
         response = requests.post(f"{ollama_base_url}/api/generate", json={
             "model": ollama_model,
             "prompt": metadata_prompt,
@@ -102,7 +102,7 @@ def parse_account_statement_pdfs(pdfs):
         print(f"Extracted metadata: {metadata_obj}")
 
         transaction_prompt = transaction_prompt_tpl(pdf_text)
-        print(f"Prompting LLM for bank statement transactions: {transaction_prompt}")
+        print(f"Prompting LLM for bank statement transactions...")
         response = requests.post(f"{ollama_base_url}/api/generate", json={
             "model": ollama_model,
             "prompt": transaction_prompt,
@@ -130,9 +130,6 @@ def parse_account_statement_pdfs(pdfs):
         # Convert back to string for database insertion
         df['date'] = df['date'].dt.strftime('%Y-%m-%d')
         df['currency'] = 'EUR'
-        # If we have "Wertpapiergutschrift" or "Wertpapierkauf" in the purpose,
-        # it's an internal transaction to/from the ING depot account.
-        df['internal'] = df['kind'].str.contains("Wertpapiergutschrift|Wertpapierkauf")
         dfs.append(df)
     return pd.concat(dfs)
 
