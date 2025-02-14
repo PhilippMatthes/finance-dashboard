@@ -10,3 +10,7 @@
 !example_classifier/**
 !json_importer/
 !json_importer/**
+!llm_pdf_importer/
+!llm_pdf_importer/**
+# Disallow the virtual environment to be committed
+.venv
