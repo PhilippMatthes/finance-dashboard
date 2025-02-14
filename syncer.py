@@ -62,16 +62,14 @@ with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cur
         iban TEXT NOT NULL,
         internal BOOLEAN DEFAULT FALSE,
         date DATE NOT NULL,
-        client TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        purpose TEXT NOT NULL,
+        message TEXT NOT NULL,
         amount DECIMAL NOT NULL,
         balance DECIMAL NOT NULL,
         currency TEXT NOT NULL,
         primary_class TEXT,
         secondary_class TEXT,
         hash VARCHAR(255) NOT NULL,
-        PRIMARY KEY (iban, date, client, kind, purpose, amount, balance, currency)
+        PRIMARY KEY (iban, date, message, amount, balance, currency)
     )""")
 
 # Fetch transactions from all importers.
@@ -82,7 +80,7 @@ for importer in importers:
 df = pd.DataFrame(transactions)
 
 # Drop duplicate transactions to avoid normal transactions being marked as internal.
-df.drop_duplicates(subset=['date', 'amount', 'client', 'purpose'], inplace=True)
+df.drop_duplicates(subset=['date', 'message'], inplace=True)
 
 # Mark transactions seen on two accounts as internal in the column 'internal'.
 # These aren't any expenses or income since they are between our own accounts.
@@ -99,9 +97,7 @@ def sha256(t):
     h = hashlib.sha256()
     h.update(t['iban'].encode())
     h.update(str(t['date']).encode())
-    h.update(t['client'].encode())
-    h.update(t['kind'].encode())
-    h.update(t['purpose'].encode())
+    h.update(t['message'].encode())
     h.update(str(t['amount']).encode())
     h.update(str(t['balance']).encode())
     h.update(t['currency'].encode())
@@ -112,17 +108,15 @@ df['hash'] = df.apply(sha256, axis=1)
 with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
     for i, transaction in df.iterrows():
         cursor.execute("""
-            INSERT INTO transactions (iban, internal, date, client, kind, purpose, amount, balance, currency, primary_class, secondary_class, hash)
+            INSERT INTO transactions (iban, internal, date, message, amount, balance, currency, primary_class, secondary_class, hash)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (iban, date, client, kind, purpose, amount, balance, currency)
+            ON CONFLICT (iban, date, message, amount, balance, currency)
             DO NOTHING
         """, (
             transaction['iban'],
             transaction['internal'], # Whether the transaction is between our own accounts
             transaction['date'],
-            transaction['client'],
-            transaction['kind'],
-            transaction['purpose'],
+            transaction['message'],
             transaction['amount'],
             transaction['balance'],
             transaction['currency'],
