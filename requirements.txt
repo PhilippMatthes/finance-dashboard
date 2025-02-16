@@ -1,4 +1,4 @@
 # To insert the transactions into the database.
-psycopg2-binary==2.9.9
+psycopg2-binary==2.9.10
 # For fast and easy csv data processing.
 pandas==2.2.3
