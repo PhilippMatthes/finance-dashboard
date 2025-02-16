@@ -84,6 +84,10 @@ df = pd.DataFrame(transactions)
 # Drop duplicate transactions to avoid normal transactions being marked as internal.
 df.drop_duplicates(subset=['date', 'amount', 'client', 'purpose'], inplace=True)
 
+# Strip all whitespace from ibans (e.g. " DE 1234 ..." -> "DE1234...")
+strip = lambda x: x.replace(' ', '')
+df['iban'] = df['iban'].apply(strip)
+
 # Mark transactions seen on two accounts as internal in the column 'internal'.
 # These aren't any expenses or income since they are between our own accounts.
 df['amount_abs'] = df['amount'].abs()
