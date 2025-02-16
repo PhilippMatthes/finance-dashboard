@@ -19,7 +19,7 @@ POSTGRES_CONF = {
 
 DASHBOARD_BASE_URL = os.getenv(
     "DASHBOARD_BASE_URL",
-    "http://localhost:3000/d/fe86cmoo161vkd/finance-dashboard",
+    "http://localhost:3000/d/finance-dashboard/finance-dashboard",
 )
 
 @app.route('/transactions/internal/toggle', methods=['GET'])
