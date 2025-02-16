@@ -4,6 +4,8 @@
 # Allow the default plugins to be committed
 !ing_pdf_de_importer/
 !ing_pdf_de_importer/**
+!ing_csv_de_importer/
+!ing_csv_de_importer/**
 !example_importer/
 !example_importer/**
 !example_classifier/
