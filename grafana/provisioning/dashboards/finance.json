@@ -89,7 +89,7 @@
           "sort": "none"
         }
       },
-      "pluginVersion": "11.5.1",
+      "pluginVersion": "11.5.2",
       "targets": [
         {
           "datasource": {
@@ -216,7 +216,7 @@
         "xTickLabelRotation": 0,
         "xTickLabelSpacing": 200
       },
-      "pluginVersion": "11.5.1",
+      "pluginVersion": "11.5.2",
       "targets": [
         {
           "datasource": {
@@ -226,7 +226,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT \n    DATE_TRUNC('${granularity}', date) AS period,\n    CASE WHEN classification IS NULL THEN 'n/a' ELSE classification END,\n    ABS(SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END)) AS Expense\nFROM \n    transactions\nWHERE \n    date BETWEEN $__timeFrom() AND $__timeTo() AND not internal\nGROUP BY \n    DATE_TRUNC('${granularity}', date), classification\nORDER BY \n    period, Expense;",
+          "rawSql": "SELECT \n    DATE_TRUNC('${granularity}', date) AS period,\n    /* Drop something in the concat clause if the colors aren't as distinguishable */\n    CASE WHEN classification IS NULL THEN 'n/a' ELSE CONCAT('', classification) END AS classification,\n    ABS(SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END)) AS Expense\nFROM \n    transactions\nWHERE \n    date BETWEEN $__timeFrom() AND $__timeTo() AND not internal\nGROUP BY \n    DATE_TRUNC('${granularity}', date), classification\nORDER BY \n    period, Expense;",
           "refId": "A",
           "sql": {
             "columns": [
@@ -425,7 +425,7 @@
         "showHeader": true,
         "sortBy": []
       },
-      "pluginVersion": "11.5.1",
+      "pluginVersion": "11.5.2",
       "targets": [
         {
           "editorMode": "code",
@@ -545,7 +545,7 @@
         "xTickLabelRotation": 0,
         "xTickLabelSpacing": 200
       },
-      "pluginVersion": "11.5.1",
+      "pluginVersion": "11.5.2",
       "targets": [
         {
           "editorMode": "code",
@@ -711,7 +711,7 @@
         "xTickLabelRotation": 0,
         "xTickLabelSpacing": 100
       },
-      "pluginVersion": "11.5.1",
+      "pluginVersion": "11.5.2",
       "targets": [
         {
           "datasource": {
@@ -761,12 +761,138 @@
       "type": "barchart"
     },
     {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "P44368ADAD746BC27"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "red",
+            "mode": "fixed"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineWidth": 1,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "fieldMinMax": false,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "currencyEUR"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "avg"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "id": 17,
+      "options": {
+        "barRadius": 0,
+        "barWidth": 0.97,
+        "fullHighlight": false,
+        "groupWidth": 0.7,
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "orientation": "vertical",
+        "showValue": "always",
+        "stacking": "none",
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        },
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 0
+      },
+      "pluginVersion": "11.5.2",
+      "targets": [
+        {
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH avg_monthly_spend AS (\n  SELECT \n    classification, \n    ABS(SUM(amount)) / NULLIF(DATE_PART('month', AGE($__timeTo()::timestamp, $__timeFrom()::timestamp)), 0) AS avg_amount_per_month\n  FROM transactions\n  WHERE\n    amount < 0\n    AND date BETWEEN $__timeFrom() AND $__timeTo()\n    AND internal = false\n  GROUP BY classification\n),\ncurrent_month_spend AS (\n  SELECT \n    classification, \n    ABS(SUM(amount)) AS current_month_amount\n  FROM transactions\n  WHERE\n    amount < 0\n    AND date BETWEEN DATE_TRUNC('month', $__timeTo()::timestamp) AND $__timeTo()::timestamp\n    AND internal = false\n  GROUP BY classification\n)\nSELECT \n  COALESCE(cms.classification, ams.classification) AS classification, \n  ams.avg_amount_per_month AS avg,\n  cms.current_month_amount AS spent\nFROM current_month_spend cms\nFULL OUTER JOIN avg_monthly_spend ams ON cms.classification = ams.classification\nORDER BY avg DESC\nLIMIT 20;",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Average spendings per month and running month based on end date",
+      "type": "barchart"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 34
+        "y": 46
       },
       "id": 15,
       "panels": [],
@@ -852,7 +978,7 @@
         "h": 4,
         "w": 24,
         "x": 0,
-        "y": 35
+        "y": 47
       },
       "id": 14,
       "options": {
@@ -867,7 +993,7 @@
         },
         "showHeader": false
       },
-      "pluginVersion": "11.5.1",
+      "pluginVersion": "11.5.2",
       "targets": [
         {
           "editorMode": "code",
@@ -906,7 +1032,7 @@
         "h": 2,
         "w": 24,
         "x": 0,
-        "y": 39
+        "y": 51
       },
       "id": 12,
       "options": {
@@ -918,7 +1044,7 @@
         "content": "[Click here to apply patched transactions](http://localhost:3001/apply-patches)",
         "mode": "markdown"
       },
-      "pluginVersion": "11.5.1",
+      "pluginVersion": "11.5.2",
       "title": "",
       "type": "text"
     }
@@ -986,7 +1112,7 @@
     ]
   },
   "time": {
-    "from": "now-1y",
+    "from": "now-6M",
     "to": "now"
   },
   "timepicker": {},
