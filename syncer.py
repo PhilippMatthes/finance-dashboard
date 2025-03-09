@@ -2,6 +2,7 @@ import os
 import psycopg2
 import pandas as pd
 import hashlib
+import difflib
 
 
 POSTGRES_CONF = {
@@ -67,6 +68,8 @@ with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cur
         balance DECIMAL NOT NULL,
         currency TEXT NOT NULL,
         classification TEXT,
+        rhythm TEXT,
+        expected DATE,
         hash VARCHAR(255) NOT NULL,
         PRIMARY KEY (iban, date, description, amount, balance, currency)
     )""")
@@ -118,12 +121,103 @@ def sha256(t):
     return h.hexdigest()
 df['hash'] = df.apply(sha256, axis=1)
 
+# Find recurring transactions.
+df['rhythm'] = None
+df['expected'] = None
+# Order by date (starting from the oldest transaction)
+df = df.sort_values(by='date')
+df['date_parsed'] = pd.to_datetime(df['date'])
+print("Finding recurring transactions...")
+for i, transaction in df.iterrows():
+    if transaction['rhythm'] != None:
+        # Already evaluated
+        continue
+    # Drop all for which we already found a rhythm (is not None)
+    similar = df[df['rhythm'].isnull()]
+    # Should have the same IBAN
+    similar = similar[similar['iban'] == transaction['iban']]
+    # Should have the same classification
+    similar = similar[similar['classification'] == transaction['classification']]
+    # Skip same transaction
+    similar = similar[similar.index != i]
+
+    # Should be within the same n% of the amount
+    def similar_amount(t, n_pct_amount=0.2):
+        if t['amount'] == 0 or transaction['amount'] == 0:
+            return t['amount'] == transaction['amount']
+        abs_diff = abs(t['amount'] - transaction['amount']) / abs(transaction['amount'])
+        return abs_diff <= n_pct_amount
+    similar = similar[similar.apply(similar_amount, axis=1)]
+
+    # Should have a n% similar description
+    def similar_description(t, n_pct_description=0.2):
+        if not t['description'] or not transaction['description']:
+            return t['description'] == transaction['description']
+        seq = difflib.SequenceMatcher(None, t['description'].lower(), transaction['description'].lower())
+        return seq.ratio() >= 1 - n_pct_description
+    similar = similar[similar.apply(similar_description, axis=1)]
+
+    # There should be a common rhythm in the transactions.
+    # E.g. monthly, bi-monthly, quarterly, half-yearly, yearly
+    rhythms = {
+        'monthly': pd.DateOffset(months=1),
+        'bi-monthly': pd.DateOffset(months=2),
+        'quarterly': pd.DateOffset(months=3),
+        'half-yearly': pd.DateOffset(months=6),
+        'yearly': pd.DateOffset(years=1),
+    }
+    # For each rhythm, create a raster until today and check which raster fits the best.
+    leeway = 3 # Number of businessdays before and after the transaction date to consider it a hit.
+    # Take the last transaction date as the reference date.
+    last_date = similar['date_parsed'].max()
+    if last_date is pd.NaT:
+        continue
+    rasters = {
+        rhythm: pd.concat([
+            pd.Series(pd.date_range(
+                transaction['date_parsed'] + pd.offsets.BusinessDay(n=delta) + freq,
+                last_date + pd.offsets.BusinessDay(n=delta), freq=freq,
+            ))
+            for delta in range(-leeway, leeway + 1)
+        ])
+        for rhythm, freq in rhythms.items()
+    }
+    # Reward hits and penalize misses. If we don't penalize misses, monthly will always win.
+    scores = {
+        rhythm: (
+            sum(raster.isin(similar['date_parsed'])) + sum(similar['date_parsed'].isin(raster)),
+            (sum(~raster.isin(similar['date_parsed'])) / (leeway * 2)) + sum(~similar['date_parsed'].isin(raster)),
+        ) # (hits, misses)
+        for rhythm, raster in rasters.items()
+    }
+    def score(r):
+        hits, misses = scores[r]
+        if hits + misses == 0:
+            return 0
+        return hits / (hits + misses)
+    best_rhythm = max(scores, key=score)
+
+    similar = similar[similar['date_parsed'].isin(rasters[best_rhythm])]
+    if len(similar) < 2:
+        continue
+
+    df.loc[similar.index, 'rhythm'] = best_rhythm
+    # Calculate the expected date for the next transaction.
+    expected = similar['date_parsed'] + rhythms[best_rhythm]
+    # Make it database insertable.
+    df.loc[similar.index, 'expected'] = expected.dt.strftime('%Y-%m-%d')
+
+# Print the transactions with a rhythm.
+print("Transactions with a rhythm:")
+for i, transaction in df[df['rhythm'].notnull()].iterrows():
+    print(transaction['date'], transaction['description'], transaction['rhythm'], transaction['expected'])
+
 # Insert transactions into the database.
 with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cursor:
     for i, transaction in df.iterrows():
         cursor.execute("""
-            INSERT INTO transactions (iban, internal, date, description, amount, balance, currency, classification, hash)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO transactions (iban, internal, date, description, amount, balance, currency, classification, rhythm, expected, hash)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (iban, date, description, amount, balance, currency)
             DO NOTHING
         """, (
@@ -135,6 +229,8 @@ with psycopg2.connect(**POSTGRES_CONF) as connection, connection.cursor() as cur
             transaction['balance'],
             transaction['currency'],
             transaction['classification'],
+            transaction['rhythm'],
+            transaction['expected'],
             transaction['hash'],
         ))
 
