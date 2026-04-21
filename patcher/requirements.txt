@@ -1,4 +1,4 @@
 # To insert the transactions into the database.
-psycopg2-binary==2.9.11
+psycopg2-binary==2.9.12
 # Webserver framework
 Flask==3.1.3
